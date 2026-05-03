@@ -1,7 +1,16 @@
-# koerier
-
 <p align="center">
   <img src="koerier.png" width="50%" alt="Koerier">
+</p>
+
+# koerier
+
+<p>
+    <a href="https://crates.io/crates/koerier"><img src="https://img.shields.io/crates/v/koerier.svg"/></a>
+    <a href="https://docs.rs/koerier"><img src="https://img.shields.io/badge/docs.rs-koerier-yellow"/></a>
+    <a href="https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/"><img src="https://img.shields.io/badge/rustc-1.85.0%2B-orange.svg?label=MSRV"/></a>
+    <a href="https://github.com/luisschwab/koerier/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0-red.svg"/></a>
+    <a href="https://github.com/luisschwab/koerier/actions/workflows/rust.yml"><img src="https://github.com/luisschwab/koerier/actions/workflows/rust.yml/badge.svg"></a>
+    <a href="https://github.com/luisschwab/koerier/actions/workflows/cross.yml"><img src="https://github.com/luisschwab/koerier/actions/workflows/cross.yml/badge.svg"></a>
 </p>
 
 _koerier_ is Dutch for courier: someone that collects and delivers messages. `koerier` collects
@@ -146,3 +155,61 @@ sequenceDiagram
 
     Caller-->>LND: Pay 'Lightning Invoice (1 sat)' over the LN
 ```
+
+## Developing
+
+This project uses [`just`](https://github.com/casey/just) for command running, and
+[`cargo-rbmt`](https://github.com/rust-bitcoin/rust-bitcoin-maintainer-tools/tree/master/cargo-rbmt)
+to manage everything related to `cargo`, such as formatting, linting, testing and CI. 
+
+To install them, run:
+
+```shell
+~$ cargo install just
+
+~$ cargo install cargo-rbmt
+```
+
+A `justfile` is provided for convenience. Run `just` to see available commands:
+
+```shell
+~$ just
+> koerier
+> A self-hosted lightning address server for LND
+
+Available recipes:
+    audit       # Run `cargo audit` [alias: a]
+    build       # Build `rust-esplora-client` [alias: b]
+    check       # Check code formatting, compilation, and linting [alias: c]
+    check-sigs  # Checks whether all commits in this branch are signed [alias: cs]
+    doc         # Generate documentation [alias: d]
+    doc-open    # Generate and open documentation [alias: do]
+    fmt         # Format code [alias: f]
+    lock        # Regenerate Cargo-recent.lock and Cargo-minimal.lock [alias: l]
+    pre-push    # Run pre-push checks [alias: p]
+    test        # Run tests
+    test-matrix # Run tests with the toolchain + lockfile matrix
+    zizmor      # Run Zizmor Static Analysis [alias: z]
+```
+
+## Minimum Supported Rust Version
+
+This library should compile with any combination of features on Rust 1.85.0.
+
+To build with the MSRV toolchain, copy `Cargo-minimal.lock` to `Cargo.lock`.
+
+## License
+
+Licensed under either of
+
+* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in the work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.
