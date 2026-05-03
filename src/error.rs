@@ -1,7 +1,6 @@
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Response},
-};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::response::Response;
 use thiserror::Error;
 
 #[derive(Error, Debug)]

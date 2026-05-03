@@ -281,7 +281,7 @@ fn parse_config(config_path: String) -> Result<(Koerier, Lnd), KoerierError> {
     // Try to parse the image to catch any errors on startup.
     if let Some(image_path) = &koerier.image_path {
         let image_path: PathBuf = PathBuf::from(&image_path);
-        let _base64_png = match get_base64_image(&image_path) {
+        match get_base64_image(&image_path) {
             Ok(_) => (),
             Err(_) => process::exit(1),
         };
@@ -309,7 +309,7 @@ fn parse_config(config_path: String) -> Result<(Koerier, Lnd), KoerierError> {
 
 /// Get a base64-encoded image [`String`] from a [`PathBuf`].
 fn get_base64_image(image_path: &PathBuf) -> Result<String, KoerierError> {
-    let image = match image::open(&image_path) {
+    let image = match image::open(image_path) {
         Ok(png) => png,
         Err(e) => {
             error!(
@@ -368,7 +368,7 @@ async fn main() {
         }
     };
 
-    let _ = match axum::serve(listener, router).await {
+    match axum::serve(listener, router).await {
         Ok(_) => {}
         Err(e) => {
             error!("axum failed to serve: {}", e);
