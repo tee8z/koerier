@@ -1,13 +1,15 @@
 [package]
-name = "koerier"
 version = "1.1.0"
-edition = "2024"
-authors = ["Luis Schwab <luisschwab@protonmail.com"]
+name = "koerier"
 description = "A self-hosted lightning address server for LND"
-license = "MIT"
+authors = ["Luis Schwab <dev@luisschwab.net"]
 repository = "https://github.com/luisschwab/koerier"
-readme = "README.md"
+documentation = "https://docs.rs/koerier"
 keywords = ["bitcoin", "lightning", "lnd", "webserver"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+edition = "2024"
+rust-version = "1.85.0" # MSRV
 
 [[bin]]
 name = "koerier"
@@ -29,3 +31,26 @@ sha2 = "0.10.9"
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "net", "macros"] }
 toml = "1.0.3"
+# These pins are needed for `Cargo-minimal.toml`:
+num-bigint = { version = "0.4.2" }
+
+[package.metadata.rbmt.toolchains]
+stable = "1.95.0"
+nightly = "nightly-2026-03-18"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.rbmt.lint]
+allowed_duplicates = [
+    "cpufeatures",
+    "getrandom",
+    "rand",
+    "rand_core",
+    "r-efi",
+    "windows-sys",
+    "wit-bindgen",
+    "zune-core",
+    "zune-jpeg"
+]

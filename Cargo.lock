@@ -1209,6 +1209,7 @@ dependencies = [
  "hex",
  "image",
  "log",
+ "num-bigint",
  "rand 0.10.0",
  "reqwest",
  "serde",
