@@ -1,38 +1,33 @@
-name: Security Audit
+name: Audit
 
 on:
-  pull_request:
-  merge_group:
-  push:
-    branches: [master]
+    push:
+      branches: [ master ]
+    pull_request:
 
 env:
-  CARGO_TERM_COLOR: always
-
+    CARGO_TERM_COLOR: always
 permissions: {}
 
 jobs:
-  supply-chain:
-    name: 'cargo-audit'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
+    audit:
+        name: Run cargo-audit
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
 
-      - uses: dtolnay/rust-toolchain@22a6a5b0f9f487c5f5587025ae9d4a1caf2a8a78 # clippy
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+              with:
+                  persist-credentials: false
 
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        with:
-          cache-on-failure: true
+            - name: Install cargo-audit
+              run: cargo install cargo-audit --locked
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --force --locked
+            - name: Check for audit warnings
+              run: cargo audit -D warnings
+              continue-on-error: true
 
-      - name: Check for audit warnings
-        run: cargo audit -D warnings
-        continue-on-error: true
-
-      - name: Check for vulnerabilities
-        run: cargo audit
+            - name: Check for vulnerabilities
+              run: cargo audit
