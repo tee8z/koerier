@@ -1208,13 +1208,7 @@ dependencies = [
  "image",
  "log",
  "num-bigint",
-<<<<<<< HEAD
- "rand 0.10.0",
-||||||| parent of c0e2fdc (feat: commit `Cargo-minimal.lock`/`Cargo-recent.lock` and delete `Cargo.lock`)
- "rand 0.10.0",
-=======
  "rand 0.10.1",
->>>>>>> c0e2fdc (feat: commit `Cargo-minimal.lock`/`Cargo-recent.lock` and delete `Cargo.lock`)
  "reqwest",
  "serde",
  "serde_json",
