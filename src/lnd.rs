@@ -1,9 +1,12 @@
 use core::net::SocketAddr;
 use std::fs;
 
-use base64::{Engine, engine::general_purpose};
-use reqwest::{Certificate, Client};
-use serde::{Deserialize, Serialize};
+use base64::Engine;
+use base64::engine::general_purpose;
+use reqwest::Certificate;
+use reqwest::Client;
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 
 use crate::error::KoerierError;

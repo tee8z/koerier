@@ -16,23 +16,23 @@ name = "koerier"
 path = "src/koerier.rs"
 
 [dependencies]
-axum = "0.8.8"
-base64 = "0.22.1"
-clap = { version = "4.5.60", features = ["derive"] }
-env_logger = "0.11.9"
-hex = "0.4.3"
-image = "0.25.9"
-log = "0.4.29"
-rand = "0.10.0"
-reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls"] }
+axum = { version = "0.8" }
+base64 = { version = "0.22" }
+clap = { version = "4.5", features = ["derive"] }
+env_logger = { version = "0.11" }
+hex = { version = "0.4" }
+image = { version = "0.25" }
+rand = { version = "0.10.1" }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-sha2 = "0.10.9"
-thiserror = "2.0.18"
+serde_json = { version = "1.0.149" }
+tracing = { version = "0.1.37" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sha2 = { version = "0.11" }
 tokio = { version = "1.49.0", features = ["rt-multi-thread", "net", "macros"] }
-toml = "1.0.3"
+toml = { version = "1" }
 # These pins are needed for `Cargo-minimal.toml`:
-num-bigint = { version = "0.4.2" }
+num-bigint = { version = "0.4.2" } # blame: image v0.25.0
 
 [package.metadata.rbmt.toolchains]
 stable = "1.95.0"
