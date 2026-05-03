@@ -6,6 +6,8 @@ alias d := doc
 alias do := doc-open
 alias f := fmt
 alias l := lock
+alias t := test
+alias tm := test-matrix
 alias z := zizmor
 alias p := pre-push
 

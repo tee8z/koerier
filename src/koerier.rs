@@ -5,19 +5,25 @@ use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 
-use axum::{
-    Router,
-    extract::{Path, Query, State},
-    routing::get,
-};
-use base64::{Engine as _, engine::general_purpose};
+use axum::Router;
+use axum::extract::Path;
+use axum::extract::Query;
+use axum::extract::State;
+use axum::routing::get;
+use base64::Engine as _;
+use base64::engine::general_purpose;
 use clap::Parser;
 use image::ImageFormat;
-use log::{debug, error, info};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
+use sha2::Sha256;
 use tokio::net::TcpListener;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 use crate::error::KoerierError;
 use crate::lnd::Lnd;
@@ -338,9 +344,10 @@ fn get_base64_image(image_path: &PathBuf) -> Result<String, KoerierError> {
 
 #[tokio::main]
 async fn main() {
-    env_logger::Builder::from_default_env()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let args = Cli::parse();
