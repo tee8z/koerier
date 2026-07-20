@@ -39,11 +39,7 @@ pub(crate) const ENDPOINT_CALLBACK: &str = "/lnurlp/callback";
 #[command(name = "koerier")]
 #[command(about = "A lightning address server for LND")]
 pub(crate) struct Cli {
-    #[arg(
-        long = "config",
-        short = 'c',
-        help = "The path to the TOML configuration file"
-    )]
+    #[arg(long = "config", short = 'c', help = "The path to the TOML configuration file")]
     pub(crate) config: String,
 }
 
@@ -129,14 +125,10 @@ pub(crate) struct KoerierErrorResponse {
 ///    "tag": "payRequest" // Type of LNURL
 /// }
 /// ```
-async fn return_params(
-    State(state): State<Arc<AxumState>>,
-    Path(user): Path<String>,
-) -> Result<String, KoerierError> {
+async fn return_params(State(state): State<Arc<AxumState>>, Path(user): Path<String>) -> Result<String, KoerierError> {
     info!("Received GET /.well-known/lnurlp/{}", user);
 
-    let mut metadata: Vec<[String; 2]> =
-        vec![["text/plain".to_string(), state.koerier.description.clone()]];
+    let mut metadata: Vec<[String; 2]> = vec![["text/plain".to_string(), state.koerier.description.clone()]];
 
     // Push a base64-encode image to the metadata, if the path is specified.
     if let Some(image_path) = state.koerier.image_path.clone() {
@@ -173,10 +165,7 @@ async fn fetch_invoice(
     State(state): State<Arc<AxumState>>,
     Query(params): Query<CallbackParams>,
 ) -> Result<String, KoerierError> {
-    info!(
-        "Received GET {}?amount={}",
-        ENDPOINT_CALLBACK, params.amount
-    );
+    info!("Received GET {}?amount={}", ENDPOINT_CALLBACK, params.amount);
 
     // Create a client to make REST requests to LND.
     let client = match state.lnd.create_client() {
@@ -194,9 +183,7 @@ async fn fetch_invoice(
     let min_amount = state.lnd.min_invoice_amount * 1000;
     let max_amount = state.lnd.max_invoice_amount * 1000;
     if amount < min_amount as usize || amount > max_amount as usize {
-        error!(
-            "Caller requested an invoice amount that is out of bounds: {amount} ∌ [{min_amount}, {max_amount}]"
-        );
+        error!("Caller requested an invoice amount that is out of bounds: {amount} ∌ [{min_amount}, {max_amount}]");
         let error_response = KoerierErrorResponse {
             status: "ERROR".to_string(),
             reason: format!(
@@ -218,16 +205,9 @@ async fn fetch_invoice(
     let invoice_amount = amount / 1000;
 
     // Try fetching the invoice from LND and return it to the caller, or return an error.
-    let response_json = match state
-        .lnd
-        .fetch_invoice(client, invoice_amount, description_hash)
-        .await
-    {
+    let response_json = match state.lnd.fetch_invoice(client, invoice_amount, description_hash).await {
         Ok(invoice) => {
-            info!(
-                "Responded to GET {}?amount={}",
-                ENDPOINT_CALLBACK, params.amount
-            );
+            info!("Responded to GET {}?amount={}", ENDPOINT_CALLBACK, params.amount);
             info!("Invoice: {}", invoice);
             let success_response = PaymentRequestResponse {
                 payment_request: invoice,
@@ -318,11 +298,7 @@ fn get_base64_image(image_path: &PathBuf) -> Result<String, KoerierError> {
     let image = match image::open(image_path) {
         Ok(png) => png,
         Err(e) => {
-            error!(
-                "Failed to open image with path path {}: {}",
-                image_path.display(),
-                e
-            );
+            error!("Failed to open image with path path {}: {}", image_path.display(), e);
             return Err(KoerierError::Image(e));
         }
     };
@@ -345,9 +321,7 @@ fn get_base64_image(image_path: &PathBuf) -> Result<String, KoerierError> {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     let args = Cli::parse();

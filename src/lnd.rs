@@ -80,9 +80,7 @@ impl Lnd {
         if let Some(payment_request) = body.get("payment_request") {
             Ok(payment_request.as_str().unwrap().to_string())
         } else {
-            Err(KoerierError::Lnd(
-                "No `payment_request` in LND's response".to_string(),
-            ))
+            Err(KoerierError::Lnd("No `payment_request` in LND's response".to_string()))
         }
     }
 }

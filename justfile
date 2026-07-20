@@ -20,11 +20,11 @@ _default:
 [doc: "Run cargo-audit across all lockfiles"]
 audit:
     @echo "Auditing Cargo.lock"
-    cargo audit --file Cargo.lock
+    cargo audit -D warnings --file Cargo.lock
     @echo "\nAuditing Cargo-recent.lock"
-    cargo audit --file Cargo-recent.lock
+    cargo audit -D warnings --file Cargo-recent.lock
     @echo "\nAuditing Cargo-minimal.lock"
-    cargo audit --file Cargo-minimal.lock
+    cargo audit -D warnings --file Cargo-minimal.lock
 
 [doc: "Build `koerier`"]
 build:
@@ -74,4 +74,3 @@ pre-push:
     @just test
     @just audit
     @just zizmor
-    @just check-sigs
