@@ -66,7 +66,7 @@ impl Lnd {
         });
 
         // Full URL to the invoice endpoint.
-        let url_invoices = format!("https://{}/v1/invoices", &self.rest_host);
+        let url_invoices = format!("https://{}/v1/invoices", self.rest_host);
 
         // Make the request to LND with the `invoice.macaroon` as a header.
         let response = client
@@ -80,9 +80,7 @@ impl Lnd {
         if let Some(payment_request) = body.get("payment_request") {
             Ok(payment_request.as_str().unwrap().to_string())
         } else {
-            Err(KoerierError::Lnd(
-                "No `payment_request` in LND's response".to_string(),
-            ))
+            Err(KoerierError::Lnd("No `payment_request` in LND's response".to_string()))
         }
     }
 }

@@ -1,67 +1,78 @@
-name: Rust CI
+name: Rust
 
 on:
     push:
       branches: [ master ]
     pull_request:
+    workflow_dispatch:
 
 permissions: {}
 env:
     CARGO_TERM_COLOR: always
     RUST_BACKTRACE: 1
+    RBMT_LOG_LEVEL: verbose
 
 jobs:
     check:
         name: Check - ${{ matrix.name }}
         runs-on: ubuntu-latest
+        permissions:
+            contents: read
         strategy:
             fail-fast: false
             matrix:
                 include:
-                    - name: Check Formatting
-                      task: fmt --check
-                    - name: Lint
-                      task: lint
                     - name: Documentation
                       task: docs
-
+                    - name: Formatting
+                      task: fmt --check
+                    - name: Linting
+                      task: lint
         steps:
-            - name: Checkout repository
-              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+            - name: Checkout Repository
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
               with:
                   persist-credentials: false
 
-            - name: Setup build cache
+            - name: Setup Rust Cache
               uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
             - name: Setup cargo-rbmt
               uses: ./.github/actions/setup-rbmt
 
-            - name: Run ${{ matrix.task }}
+            - name: Check ${{ matrix.task }}
               run: cargo rbmt ${{ matrix.task }}
 
     test:
-        name: Test - ${{ matrix.toolchain }} toolchain, ${{ matrix.lockfile }} deps
+        name: Test - ${{ matrix.name }}
         runs-on: ubuntu-latest
+        permissions:
+            contents: read
         strategy:
             fail-fast: false
             matrix:
                 include:
-                    - toolchain: stable
+                    - name: Stable Toolchain + Recent Lockfile
+                      toolchain: stable
                       lockfile: recent
-                    - toolchain: msrv
+                    - name: Stable Toolchain + Minimal Lockfile
+                      toolchain: stable
                       lockfile: minimal
+                    - name: MSRV Toolchain + Minimal Lockfile
+                      toolchain: msrv
+                      lockfile: minimal
+
         steps:
-            - name: Checkout repository
-              uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+            - name: Checkout Repository
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
               with:
                   persist-credentials: false
 
-            - name: Setup build cache
+            - name: Setup Rust Cache
               uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
             - name: Setup cargo-rbmt
               uses: ./.github/actions/setup-rbmt
 
-            - name: Run tests
-              run: cargo rbmt test --toolchain ${{ matrix.toolchain }} --lock-file ${{ matrix.lockfile }}
+            - name: Run Tests - ${{ matrix.name }}
+              run: cargo rbmt test --toolchain ${{ matrix.toolchain }} --lockfile ${{ matrix.lockfile }}

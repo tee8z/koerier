@@ -1,76 +1,76 @@
 alias a := audit
 alias b := build
 alias c := check
-alias cs := check-sigs
-alias d := doc
-alias do := doc-open
+alias d := docs
+alias do := docs-open
 alias f := fmt
 alias l := lock
 alias t := test
-alias tm := test-matrix
+alias ta := test-all
 alias z := zizmor
 alias p := pre-push
+
+export RBMT_LOG_LEVEL := env("RBMT_LOG_LEVEL", "verbose")
 
 _default:
     @echo "> koerier"
     @echo "> A self-hosted lightning address server for LND\n"
     @just --list
 
-[doc: "Run `cargo audit`"]
+[doc: "Run cargo-audit across all lockfiles"]
 audit:
-    cargo audit
+    @echo "Auditing Cargo.lock"
+    cargo audit -D warnings --file Cargo.lock
+    @echo "\nAuditing Cargo-recent.lock"
+    cargo audit -D warnings --file Cargo-recent.lock
+    @echo "\nAuditing Cargo-minimal.lock"
+    cargo audit -D warnings --file Cargo-minimal.lock
 
-[doc: "Build `rust-esplora-client`"]
+[doc: "Build `koerier`"]
 build:
-    RBMT_LOG_LEVEL=progress cargo rbmt run build
+    cargo rbmt run build
 
-[doc: "Check code formatting, compilation, and linting"]
+[doc: "Check Formatting, Linting and Documentation"]
 check:
     RBMT_LOG_LEVEL=progress cargo rbmt fmt --check
     RBMT_LOG_LEVEL=progress cargo rbmt lint
     RBMT_LOG_LEVEL=progress cargo rbmt docs
 
-[doc: "Checks whether all commits in this branch are signed"]
-check-sigs:
-    bash contrib/check-signatures.sh
-
-[doc: "Generate documentation"]
-doc:
+[doc: "Generate Documentation"]
+docs:
     RBMT_LOG_LEVEL=progress cargo rbmt docs
-    RBMT_LOG_LEVEL=progress cargo rbmt run doc --no-deps
 
-[doc: "Generate and open documentation"]
-doc-open:
-    RBMT_LOG_LEVEL=progress cargo rbmt docs
-    RBMT_LOG_LEVEL=progress cargo rbmt run doc --no-deps --open
+[doc: "Generate and Open Documentation"]
+docs-open:
+    RBMT_LOG_LEVEL=progress cargo rbmt docs --open
 
-[doc: "Format code"]
+[doc: "Format Code"]
 fmt:
     RBMT_LOG_LEVEL=progress cargo rbmt fmt
 
-[doc: "Regenerate Cargo-recent.lock and Cargo-minimal.lock"]
+[doc: "Regenerate Lockfiles"]
 lock:
-    RBMT_LOG_LEVEL=verbose cargo rbmt lock
+    cargo rbmt lock
 
-[doc: "Run tests"]
+[doc: "Run Tests"]
 test:
-    RBMT_LOG_LEVEL=verbose cargo rbmt test
+    cargo rbmt test
 
-[doc: "Run tests with the toolchain + lockfile matrix"]
-test-matrix:
-    RBMT_LOG_LEVEL=verbose cargo rbmt test --toolchain stable --lock-file recent
-    RBMT_LOG_LEVEL=verbose cargo rbmt test --toolchain msrv --lock-file minimal
+[doc: "Run Tests with Lockfile and Toolchain Combos"]
+test-all:
+    cargo rbmt test  --toolchain msrv --lockfile minimal
+    cargo rbmt test  --toolchain stable --lockfile minimal
+    cargo rbmt test  --toolchain stable --lockfile recent
 
-[doc: "Run Zizmor Static Analysis"]
+[doc: "Run Zizmor"]
 zizmor:
-    uvx zizmor .
+    zizmor .
 
 [doc: "Run pre-push checks"]
 pre-push:
     @just lock
     @just check
-    @just doc
+    @just docs
     @just test
     @just audit
     @just zizmor
-    @just check-sigs
