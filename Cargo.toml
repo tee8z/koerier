@@ -34,9 +34,11 @@ toml = { version = "1" }
 # These pins are needed for `Cargo-minimal.toml`:
 num-bigint = { version = "0.4.2" } # blame: image v0.25.0
 
-[package.metadata.rbmt.toolchains]
-stable = "1.95.0"
-nightly = "nightly-2026-03-18"
+[package.metadata.rbmt]
+version = "0.5.1"
+toolchains = { stable = "1.97.1", nightly = "nightly-2026-07-17" }
+tools = { cargo-audit = "=0.22.2", zizmor = "=1.26.1" }
+test = { sample_strategy = "all" }
 
 [package.metadata.docs.rs]
 all-features = true
@@ -44,12 +46,10 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [package.metadata.rbmt.lint]
 allowed_duplicates = [
-    "cpufeatures",
     "getrandom",
     "rand",
     "rand_core",
     "r-efi",
-    "windows-sys",
     "wit-bindgen",
     "zune-core",
     "zune-jpeg"

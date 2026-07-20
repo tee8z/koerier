@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="koerier.png" width="50%" alt="Koerier">
+  <img src="assets/koerier.png" width="50%">
 </p>
 
 # koerier

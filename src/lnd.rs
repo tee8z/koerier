@@ -66,7 +66,7 @@ impl Lnd {
         });
 
         // Full URL to the invoice endpoint.
-        let url_invoices = format!("https://{}/v1/invoices", &self.rest_host);
+        let url_invoices = format!("https://{}/v1/invoices", self.rest_host);
 
         // Make the request to LND with the `invoice.macaroon` as a header.
         let response = client

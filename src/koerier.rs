@@ -75,7 +75,7 @@ pub(crate) struct AxumState {
 
 /// URL parameters that need to be read from the callback request: `amount`.
 ///
-/// https://<domain>/<ENDPOINT_CALLBACK>?`amount`=<amount as milli-satoshis>
+/// `https://<domain>/<ENDPOINT_CALLBACK>?`amount`=<amount as milli-satoshis>`
 #[derive(Deserialize)]
 pub(crate) struct CallbackParams {
     /// Amount, in milli satoshis.
