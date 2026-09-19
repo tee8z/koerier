@@ -1,7 +1,10 @@
 use super::*;
 use axum::body::{Body, to_bytes};
 use axum::http::Request;
-use rcgen::generate_simple_self_signed;
+use rcgen::{
+    BasicConstraints, CertificateParams, CertifiedKey, ExtendedKeyUsagePurpose, IsCa, KeyPair, KeyUsagePurpose,
+    generate_simple_self_signed,
+};
 use rustls::pki_types::PrivatePkcs8KeyDer;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -33,12 +36,31 @@ impl Drop for FakeLnd {
 
 impl FakeLnd {
     async fn new(status: &str, body: String, delay: Duration, valid_host: bool) -> Self {
+        Self::with_ca_certificate(status, body, delay, valid_host, false).await
+    }
+
+    async fn with_ca_certificate(status: &str, body: String, delay: Duration, valid_host: bool, is_ca: bool) -> Self {
         let names = if valid_host {
             vec!["localhost".into(), "127.0.0.1".into()]
         } else {
             vec!["wrong.example".into()]
         };
-        let cert = generate_simple_self_signed(names).unwrap();
+        let cert = if is_ca {
+            // LND uses its self-signed CA:true certificate as its server certificate.
+            let mut params = CertificateParams::new(names).unwrap();
+            params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            params.key_usages = vec![
+                KeyUsagePurpose::DigitalSignature,
+                KeyUsagePurpose::KeyEncipherment,
+                KeyUsagePurpose::KeyCertSign,
+            ];
+            params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+            let signing_key = KeyPair::generate().unwrap();
+            let cert = params.self_signed(&signing_key).unwrap();
+            CertifiedKey { cert, signing_key }
+        } else {
+            generate_simple_self_signed(names).unwrap()
+        };
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("tls.cert"), cert.cert.pem()).unwrap();
         fs::write(dir.path().join("invoice.macaroon"), [0, 1, 0xfe, 0xff]).unwrap();
@@ -298,6 +320,25 @@ async fn backend_errors_are_sanitized_and_release_permits() {
 }
 
 #[tokio::test]
+async fn accepts_lnd_self_signed_ca_as_server_certificate() {
+    let mut lnd = FakeLnd::with_ca_certificate(
+        "200 OK",
+        json!({"payment_request": "lnd-invoice"}).to_string(),
+        Duration::ZERO,
+        true,
+        true,
+    )
+    .await;
+    let (app, _) = app(config(BTreeMap::from([("odin".into(), lnd.backend())])), lnd.dir.path());
+    assert_eq!(
+        get(&app, "/lnurlp/odin/callback?amount=1999").await["pr"],
+        "lnd-invoice"
+    );
+    let request = lnd.requests.recv().await.unwrap();
+    assert_eq!(request.body["value_msat"], "1999");
+}
+
+#[tokio::test]
 async fn tls_hostname_is_verified() {
     let mut lnd = FakeLnd::new(
         "200 OK",
@@ -309,6 +350,36 @@ async fn tls_hostname_is_verified() {
     let (app, _) = app(config(BTreeMap::from([("odin".into(), lnd.backend())])), lnd.dir.path());
     assert_eq!(get(&app, "/lnurlp/odin/callback?amount=1000").await["status"], "ERROR");
     assert!(lnd.requests.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn ca_server_certificate_still_requires_trusted_identity() {
+    for valid_host in [false, true] {
+        let mut lnd = FakeLnd::with_ca_certificate(
+            "200 OK",
+            json!({"payment_request": "invoice"}).to_string(),
+            Duration::ZERO,
+            valid_host,
+            true,
+        )
+        .await;
+        let other = FakeLnd::with_ca_certificate(
+            "200 OK",
+            json!({"payment_request": "other"}).to_string(),
+            Duration::ZERO,
+            true,
+            true,
+        )
+        .await;
+        let mut backend = lnd.backend();
+        if valid_host {
+            // Matching IP, but this certificate was not issued by the configured trust anchor.
+            backend.tls_cert_path = other.dir.path().join("tls.cert");
+        }
+        let (app, _) = app(config(BTreeMap::from([("odin".into(), backend)])), lnd.dir.path());
+        assert_eq!(get(&app, "/lnurlp/odin/callback?amount=1000").await["status"], "ERROR");
+        assert!(lnd.requests.try_recv().is_err());
+    }
 }
 
 #[tokio::test]
@@ -414,11 +485,15 @@ invoice_expiry_sec = 300
 }
 
 #[test]
-fn startup_installs_crypto_provider() {
+fn startup_builds_native_tls_client_without_rustls_provider() {
     const CHILD_ENV: &str = "KOERIER_PROVIDER_TEST_CHILD";
     if std::env::var_os(CHILD_ENV).is_none() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tests::startup_installs_crypto_provider", "--nocapture"])
+            .args([
+                "--exact",
+                "tests::startup_builds_native_tls_client_without_rustls_provider",
+                "--nocapture",
+            ])
             .env(CHILD_ENV, "1")
             .status()
             .unwrap();
@@ -452,4 +527,5 @@ fn startup_installs_crypto_provider() {
         )
         .is_ok()
     );
+    assert!(rustls::crypto::CryptoProvider::get_default().is_none());
 }

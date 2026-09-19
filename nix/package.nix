@@ -1,4 +1,9 @@
-{ lib, rustPlatform }:
+{
+  lib,
+  rustPlatform,
+  pkg-config,
+  openssl,
+}:
 
 rustPlatform.buildRustPackage {
   pname = "koerier";
@@ -20,6 +25,9 @@ rustPlatform.buildRustPackage {
   };
 
   cargoLock.lockFile = ../Cargo.lock;
+
+  nativeBuildInputs = [ pkg-config ];
+  buildInputs = [ openssl ];
 
   meta = {
     description = "Lightning Address and LNURL-pay server backed by LND";

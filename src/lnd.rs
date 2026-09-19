@@ -73,11 +73,12 @@ impl Node {
         header.set_sensitive(true);
         let mut headers = HeaderMap::new();
         headers.insert("Grpc-Metadata-macaroon", header);
-        // reqwest's rustls-no-provider feature needs an explicitly installed provider.
-        // A previous node (or embedding application) may already have installed one.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        // LND serves a self-signed CA:true certificate. Native TLS accepts that
+        // certificate as its configured trust anchor while still verifying the
+        // certificate chain, validity period, and requested host/IP address.
         let client = Client::builder()
-            .add_root_certificate(certificate)
+            .tls_backend_native()
+            .tls_certs_only([certificate])
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()

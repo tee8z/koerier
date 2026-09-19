@@ -46,6 +46,8 @@
         in
         {
           default = pkgs.mkShell {
+            nativeBuildInputs = [ pkgs.pkg-config ];
+            buildInputs = [ pkgs.openssl ];
             packages = with pkgs; [
               cargo
               rustc

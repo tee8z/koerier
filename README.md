@@ -30,6 +30,9 @@ sequenceDiagram
 
 ## Run
 
+Install Rust 1.95 or later, `pkg-config`, and the OpenSSL development headers and libraries.
+For Nix users, `nix develop` provides these build dependencies.
+
 Build with the committed dependency lock:
 
 ```sh
@@ -71,6 +74,8 @@ Use one `[nodes.<name>]` section per LND node, as shown in [the complete example
 Discovery and callback amounts use millisatoshis. A 1,999-msat request creates a 1,999-msat invoice without rounding.
 Invoices include private-channel route hints and a description hash of the exact advertised metadata.
 Node requests verify TLS, disable redirects and proxies, reuse connections, and return bounded errors when LND is unavailable.
+On Linux, the native TLS backend uses OpenSSL and trusts only the certificate configured for that node.
+It verifies certificate validity and the requested IP address, including LND's self-signed certificates with `CA:true`.
 The service uses the configured LND node's Bitcoin network, including Mutinynet signet.
 Verify each backend's network and channels before paying; koerier does not independently verify the returned BOLT11 invoice.
 
