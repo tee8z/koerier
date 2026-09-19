@@ -1,215 +1,119 @@
-<p align="center">
-  <img src="assets/koerier.png" width="50%">
-</p>
-
 # koerier
 
-<p>
-    <a href="https://crates.io/crates/koerier"><img src="https://img.shields.io/crates/v/koerier.svg"/></a>
-    <a href="https://docs.rs/koerier"><img src="https://img.shields.io/badge/docs.rs-koerier-yellow"/></a>
-    <a href="https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/"><img src="https://img.shields.io/badge/rustc-1.85.0%2B-orange.svg?label=MSRV"/></a>
-    <a href="https://github.com/luisschwab/koerier/blob/master/LICENSE"><img src="https://img.shields.io/badge/License-MIT%2FApache--2.0-red.svg"/></a>
-    <a href="https://github.com/luisschwab/koerier/actions/workflows/rust.yml"><img src="https://github.com/luisschwab/koerier/actions/workflows/rust.yml/badge.svg"></a>
-    <a href="https://github.com/luisschwab/koerier/actions/workflows/cross.yml"><img src="https://github.com/luisschwab/koerier/actions/workflows/cross.yml/badge.svg"></a>
-</p>
+A small Rust service that gives multiple LND nodes Lightning Addresses on one HTTPS domain.
+This fork extends [luisschwab/koerier](https://github.com/luisschwab/koerier) with explicit node routing and bounded invoice requests.
+The original MIT OR Apache-2.0 licenses remain in effect.
 
-_koerier_ is Dutch for courier: someone that collects and delivers messages. `koerier` collects
-lightning invoice requests and delivers lightning invoices.
+| Lightning Address | LND REST endpoint |
+| --- | --- |
+| `odin@ln.example.org` | `127.0.0.1:8080` |
+| `thor@ln.example.org` | `127.0.0.1:8081` |
+| `freya@ln.example.org` | `127.0.0.1:8082` |
 
-## Usage
-
-Install the Rust toolchain:
-```shell
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-Clone this repository and install the binary:
-```
-git clone https://github.com/luisschwab/koerier
-cd koerier
-cargo install --path .
-```
-
-Create a TOML file with these fields:
-```toml
-[koerier]
-domain = "https://example.org" # the domain used on the callback URL
-bind_address = "0.0.0.0:3441" # the address koerier will listen on
-description = "If you don't believe me or don't get it, I don't have time to try to convince you, sorry." # description that will be displayed when the LNURL endpoint is hit
-image_path = "./image.png" # optional: path to a PNG image that will be displayed when the LNURL endpoint is hit
-
-[lnd]
-rest_host = "127.0.0.1:8080" # LND's REST address
-tls_cert_path = "/root/.lnd/tls.cert" # path to LND's TLS certificate
-invoice_macaroon_path = "/root/.lnd/data/chain/bitcoin/mainnet/invoice.macaroon" # path to LND's invoice macaroon
-min_invoice_amount = 1 # the minimum allowed invoice amount in sats
-max_invoice_amount = 1_000_000 # the maximum allowed invoice amount in sats
-invoice_expiry_sec = 3600 # the invoice expiry time in seconds
-```
-
-Then run it:
-```shell
-koerier -c config.toml
-[2025-09-06T02:49:15Z INFO  koerier] Successfully parsed configuration from `config.toml`
-[2025-09-06T02:49:15Z INFO  koerier] koerier is bound and listening at 0.0.0.0:3441
-```
-
-Optionally, use the example [`systemd`](example/koerier.service) service provided here:
-```shell
-cp example/koerier.service /etc/systemd/system/koerier.service
-systemctl daemon-reload
-systemctl enable koerier.service
-systemctl start koerier.service
-```
-
-Since `koerier` does not implement TLS termination, you need to have a webserver acting as a reverse proxy in front of it.
-You can use the provided [Caddyfile](example/Caddyfile), or adapt it to another webserver implementation:
-
-```Caddyfile
-example.org {
-     handle /.well-known/lnurlp* {
-         reverse_proxy 10.10.10.10:3441 {
-             header_down Access-Control-Allow-Origin "*"
-             header_down Access-Control-Allow-Methods "GET, POST, OPTIONS"
-             header_down Access-Control-Allow-Headers "Content-Type"
-         }
-     }
-     handle /lnurlp/callback* {
-         reverse_proxy 10.10.10.10:3441 {
-             header_down Access-Control-Allow-Origin "*"
-             header_down Access-Control-Allow-Methods "GET, POST, OPTIONS"
-             header_down Access-Control-Allow-Headers "Content-Type"
-         }
-     }
-}
-```
-
-## Architecture
-
-`koerier` is a middleware that implements the Lightning Address, specified in [LUD06](https://github.com/lnurl/luds/blob/luds/06.md).
-It sits between the caller, usually a lightning wallet, and an LND lightning node.
-The caller hits the correct endpoint and receives a lightning invoice.
-
-## Lightning Address
-
-A lightning address is an internet identifier identical to an email address–_sats@luisschwab.net_ is a lightning address–designed
-to make it easy to pay to someone in a non-interactive way, without the need to ask the person for an invoice.
-
-The part before the `@` specifies the user and the part after the `@` specifies the provider.
-
-Let's say you want to make a payment to the `sats` user, which has an account with the `luisschwab.net` provider.
-The caller can make a `GET` request to `https://luisschwab.net/.well-known/lnurlp/sats`, and receive a response
-in this format:
-
-```json
-{
-  "metadata": "[[\"text/plain\",\"Money order in the name of Luis Schwab\"]]",
-  "tag": "payRequest",
-  "minSendable": 1000,
-  "maxSendable": 1000000000,
-  "callback": "https://luisschwab.net/lnurlp/callback"
-}
-```
-
-Then the caller makes another `GET` request to the callback URL, with an `amount` parameter with the desired invoice
-amount in milli-satoshis, respecting the boundaries set by `minSendable` and `maxSendable` (these are also in milli-satoshis):
-
-```shell
-curl "https://luisschwab.net/lnurlp/callback?amount=1000"
-```
-
-```json
-{
-  "pr": "lnbc10n1p5teqcqpp5wms2zf7484prd5qrfrhvujsplxdvn02qargeega73m2wwr4w7m3shp5v9h3gnjjae46gpgsglr8everxdx2xcwdrv639mf56s7l65def5kqcqzysxqrrsssp5t5hf4t3pz5cxduf0cjdh0g098c8gxs27mpvm2jwu6rm0qv3rq68s9qxpqysgqshl7d530ekw2lz94am96yfct9s0vumscr3808vqy2d7kgs08ltzppqq3dm0mgwtlzu2wk26m964d79pmdlmmz5nc6he2u7lqh60gmhgqm2efh2",
-  "routes": []
-}
-```
-
-Then the caller extracts the `pr` field and pays the invoice normally.
-
-> [!NOTE]
-> Currently, the username field is a catch-all: any username is valid.
-> If you'd like the ability to define a set of valid usernames, open an issue and I'll address it.
-
-## Sequence Diagram
-
-This is the sequence diagram for the entire workflow, in accordance with [LUD06](https://github.com/lnurl/luds/blob/luds/06.md):
+Each configured name maps to one LND node. Unknown names return an error.
+The service creates invoices; payments travel over Lightning directly to the selected node.
+It needs an invoice macaroon and TLS certificate for each node, with no wallet database or payment-sending credentials.
 
 ```mermaid
 sequenceDiagram
-    actor Caller
-    participant koerier
-    participant LND
-
-    Caller->>koerier: GET '/.well-known/lnurlp/sats'
-
-    koerier-->>Caller: return callback '/lnurlp/callback' + parameters
-
-    Caller->>koerier: GET '/lnurlp/callback?amount=1000'
-
-    koerier->>LND: POST '/v1/invoices' + 1 sat parameter
-
-    LND-->>koerier: return 'Lightning Invoice (1 sat)'
-
-    koerier-->>Caller: return 'Lightning Invoice (1 sat)'
-
-    Caller-->>LND: Pay 'Lightning Invoice (1 sat)' over the LN
+    participant Payer
+    participant Koerier
+    participant Thor as Thor LND
+    Payer->>Koerier: GET /.well-known/lnurlp/thor
+    Koerier-->>Payer: Metadata, amount limits, callback URL
+    Payer->>Koerier: GET /lnurlp/thor/callback?amount=1999
+    Koerier->>Thor: AddInvoice for 1999 millisatoshis
+    Thor-->>Koerier: BOLT11 invoice
+    Koerier-->>Payer: Invoice
+    Payer->>Thor: Pay over Lightning
 ```
 
-## Developing
+## Run
 
-This project uses [`just`](https://github.com/casey/just) for command running, and
-[`cargo-rbmt`](https://github.com/rust-bitcoin/rust-bitcoin-maintainer-tools/tree/master/cargo-rbmt)
-to manage everything related to `cargo`, such as formatting, linting, testing and CI. 
+Build with the committed dependency lock:
 
-To install them, run:
-
-```shell
-~$ cargo install just
-
-~$ cargo install cargo-rbmt
+```sh
+cargo build --release --locked
+cp example/config.toml.example config.toml
 ```
 
-A `justfile` is provided for convenience. Run `just` to see available commands:
+Edit `config.toml` with your public HTTPS origin, node endpoints, and credential paths.
+Then start the service:
 
-```shell
-~$ just
-> koerier
-> A self-hosted lightning address server for LND
-
-Available recipes:
-    audit       # Run `cargo audit` [alias: a]
-    build       # Build `rust-esplora-client` [alias: b]
-    check       # Check code formatting, compilation, and linting [alias: c]
-    check-sigs  # Checks whether all commits in this branch are signed [alias: cs]
-    doc         # Generate documentation [alias: d]
-    doc-open    # Generate and open documentation [alias: do]
-    fmt         # Format code [alias: f]
-    lock        # Regenerate Cargo-recent.lock and Cargo-minimal.lock [alias: l]
-    pre-push    # Run pre-push checks [alias: p]
-    test        # Run tests
-    test-matrix # Run tests with the toolchain + lockfile matrix
-    zizmor      # Run Zizmor Static Analysis [alias: z]
+```sh
+./target/release/koerier --config config.toml
 ```
 
-## Minimum Supported Rust Version
+Relative credential paths resolve beneath `CREDENTIALS_DIRECTORY` when systemd provides it.
+Otherwise, they resolve beside the configuration file. Absolute paths also work.
+Use the binary `invoice.macaroon`, not its hex encoding.
+The node certificate must cover the IP address in `rest_host`.
 
-This library should compile with any combination of features on Rust 1.85.0.
+The example listens on `127.0.0.1:8090`. Put Caddy or another HTTPS reverse proxy in front of it.
+See [the Caddy example](example/Caddyfile.example) and [the systemd example](example/koerier.service.example).
+Serve discovery and callback paths publicly; keep `/healthz` private.
+If the proxy runs on another host, bind the private interface and allow only that proxy through the firewall.
 
-To build with the MSRV toolchain, copy `Cargo-minimal.lock` to `Cargo.lock`.
+## Configuration
 
-## License
+The `[koerier]` section configures the shared listener and HTTPS origin.
+Use one `[nodes.<name>]` section per LND node, as shown in [the complete example](example/config.toml.example).
 
-Licensed under either of
+| Setting | Meaning |
+| --- | --- |
+| `domain` | Public HTTPS origin used to construct callbacks; request Host headers do not change it |
+| `bind_address` | Private HTTP listener |
+| `request_timeout_secs` | Deadline for each LND request; defaults to 10 seconds |
+| `max_in_flight` | Maximum simultaneous invoice requests; defaults to 16 |
+| `min_invoice_amount`, `max_invoice_amount` | Per-node advertised amount bounds, configured in satoshis |
+| `invoice_expiry_sec` | Per-node invoice lifetime |
 
-* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+Discovery and callback amounts use millisatoshis. A 1,999-msat request creates a 1,999-msat invoice without rounding.
+Invoices include private-channel route hints and a description hash of the exact advertised metadata.
+Node requests verify TLS, disable redirects and proxies, reuse connections, and return bounded errors when LND is unavailable.
+The service uses the configured LND node's Bitcoin network, including Mutinynet signet.
+Verify each backend's network and channels before paying; koerier does not independently verify the returned BOLT11 invoice.
 
-at your option.
+This fork replaces upstream's single `[lnd]` section with `[nodes.<name>]` sections.
+Callbacks now include the configured node name: `/lnurlp/<name>/callback`.
 
-### Contribution
+## NixOS
 
-Unless you explicitly state otherwise, any contribution intentionally
-submitted for inclusion in the work by you, as defined in the Apache-2.0
-license, shall be dual licensed as above, without any additional terms or
-conditions.
+The flake exports packages for `x86_64-linux` and `aarch64-linux`, plus `nixosModules.default`.
+See [the NixOS module](nix/module.nix) for its options.
+Credentials remain host files and are passed through systemd `LoadCredential`.
+The module does not open a public firewall port or configure DNS/TLS.
+
+```sh
+nix build .#koerier
+nix flake check
+```
+
+## Verify
+
+Fetch discovery, then request a small invoice:
+
+```sh
+curl --fail https://ln.example.org/.well-known/lnurlp/thor
+curl --fail 'https://ln.example.org/lnurlp/thor/callback?amount=1999'
+```
+
+Discovery returns `tag: payRequest` and a callback for Thor.
+The callback returns `pr`, containing an invoice for exactly 1,999 msat.
+Pay it from a different node and confirm receipt on Thor. Repeat for Freya.
+Creating an invoice alone does not verify payment routing or receipt.
+
+`GET /healthz` reports process liveness, not LND synchronization or channel liquidity.
+Restart koerier after replacing node certificates or macaroons; it loads credentials at startup.
+
+Run the focused protocol and backend checks locally:
+
+```sh
+cargo fmt --all --check
+cargo test --locked
+cargo clippy --all-targets --locked -- -D warnings
+```
+
+This service implements ordinary [LNURL-pay](https://github.com/lnurl/luds/blob/luds/06.md)
+and [Lightning Addresses](https://github.com/lnurl/luds/blob/luds/16.md).
+It does not create hold invoices tied to a caller-provided payment hash.

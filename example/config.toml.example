@@ -1,13 +1,32 @@
 [koerier]
-domain = "https://example.org"
-bind_address = "0.0.0.0:3441"
-description = "How much a dollar really cost?"
-#image_path = "./image.png"
+domain = "https://ln.example.org"
+bind_address = "127.0.0.1:8090"
+description = "Mutinynet test payment"
+request_timeout_secs = 10
+max_in_flight = 16
 
-[lnd]
+# Relative credential paths use CREDENTIALS_DIRECTORY, or the config directory.
+# Amount bounds below are in sats; LNURL requests and invoices use exact msats.
+[nodes.odin]
 rest_host = "127.0.0.1:8080"
-tls_cert_path = "/root/.lnd/tls.cert"
-invoice_macaroon_path = "/root/.lnd/data/chain/bitcoin/mainnet/invoice.macaroon"
-min_invoice_amount = 1         # 1 sat
-max_invoice_amount = 1_000_000 # 1M sats
-invoice_expiry_sec = 3600      # 1 hour
+tls_cert_path = "odin.cert"
+invoice_macaroon_path = "odin.macaroon"
+min_invoice_amount = 1
+max_invoice_amount = 1_000_000
+invoice_expiry_sec = 300
+
+[nodes.thor]
+rest_host = "127.0.0.1:8081"
+tls_cert_path = "thor.cert"
+invoice_macaroon_path = "thor.macaroon"
+min_invoice_amount = 1
+max_invoice_amount = 1_000_000
+invoice_expiry_sec = 300
+
+[nodes.freya]
+rest_host = "127.0.0.1:8082"
+tls_cert_path = "freya.cert"
+invoice_macaroon_path = "freya.macaroon"
+min_invoice_amount = 1
+max_invoice_amount = 1_000_000
+invoice_expiry_sec = 300

@@ -1,78 +1,27 @@
 name: Rust
 
 on:
-    push:
-      branches: [ master ]
-    pull_request:
-    workflow_dispatch:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
 
-permissions: {}
+permissions:
+  contents: read
+
 env:
-    CARGO_TERM_COLOR: always
-    RUST_BACKTRACE: 1
-    RBMT_LOG_LEVEL: verbose
+  CARGO_TERM_COLOR: always
 
 jobs:
-    check:
-        name: Check - ${{ matrix.name }}
-        runs-on: ubuntu-latest
-        permissions:
-            contents: read
-        strategy:
-            fail-fast: false
-            matrix:
-                include:
-                    - name: Documentation
-                      task: docs
-                    - name: Formatting
-                      task: fmt --check
-                    - name: Linting
-                      task: lint
-        steps:
-            - name: Checkout Repository
-              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-              with:
-                  persist-credentials: false
-
-            - name: Setup Rust Cache
-              uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-            - name: Setup cargo-rbmt
-              uses: ./.github/actions/setup-rbmt
-
-            - name: Check ${{ matrix.task }}
-              run: cargo rbmt ${{ matrix.task }}
-
-    test:
-        name: Test - ${{ matrix.name }}
-        runs-on: ubuntu-latest
-        permissions:
-            contents: read
-        strategy:
-            fail-fast: false
-            matrix:
-                include:
-                    - name: Stable Toolchain + Recent Lockfile
-                      toolchain: stable
-                      lockfile: recent
-                    - name: Stable Toolchain + Minimal Lockfile
-                      toolchain: stable
-                      lockfile: minimal
-                    - name: MSRV Toolchain + Minimal Lockfile
-                      toolchain: msrv
-                      lockfile: minimal
-
-        steps:
-            - name: Checkout Repository
-              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-              with:
-                  persist-credentials: false
-
-            - name: Setup Rust Cache
-              uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-
-            - name: Setup cargo-rbmt
-              uses: ./.github/actions/setup-rbmt
-
-            - name: Run Tests - ${{ matrix.name }}
-              run: cargo rbmt test --toolchain ${{ matrix.toolchain }} --lockfile ${{ matrix.lockfile }}
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - run: rustup update stable --no-self-update
+      - run: rustup component add rustfmt clippy --toolchain stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - run: cargo +stable fmt --all --check
+      - run: cargo +stable test --locked
+      - run: cargo +stable clippy --all-targets --locked -- -D warnings

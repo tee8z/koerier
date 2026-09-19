@@ -1,5 +1,7 @@
-target/**
-Cargo.lock
+target/
+result
+result-*
+.direnv/
 Cargo.lock.backup
 
 *.cert

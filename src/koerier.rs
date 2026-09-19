@@ -1,359 +1,295 @@
-use core::net::SocketAddr;
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
-use std::path::PathBuf;
-use std::process;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::Router;
-use axum::extract::Path;
-use axum::extract::Query;
-use axum::extract::State;
+use anyhow::{Context, Result, bail};
+use axum::extract::rejection::PathRejection;
+use axum::extract::{Path as RoutePath, RawQuery, State};
+use axum::middleware;
 use axum::routing::get;
-use base64::Engine as _;
-use base64::engine::general_purpose;
+use axum::{Json, Router};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use clap::Parser;
 use image::ImageFormat;
-use serde::Deserialize;
-use serde::Serialize;
-use serde_json::json;
-use sha2::Digest;
-use sha2::Sha256;
+use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
+use tokio::sync::Semaphore;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
+use url::Url;
 
-use crate::error::KoerierError;
-use crate::lnd::Lnd;
-
+use crate::error::LnurlError;
+use crate::lnd::{Lnd, Node};
 mod error;
 mod lnd;
+#[cfg(test)]
+mod tests;
 
-pub(crate) const ENDPOINT_LNURLP: &str = "/.well-known/lnurlp/{user}";
-pub(crate) const ENDPOINT_CALLBACK: &str = "/lnurlp/callback";
-
-/// TOML configuration file path CLI argument.
 #[derive(Parser)]
-#[command(name = "koerier")]
-#[command(about = "A lightning address server for LND")]
-pub(crate) struct Cli {
-    #[arg(long = "config", short = 'c', help = "The path to the TOML configuration file")]
-    pub(crate) config: String,
+#[command(name = "koerier", about = "A Lightning Address server for named LND nodes")]
+struct Cli {
+    #[arg(long, short = 'c', help = "Path to the TOML configuration file")]
+    config: PathBuf,
 }
 
-/// Koerier configuration parameters.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub(crate) struct Koerier {
-    /// The address where `koerier` will be bound to.
-    pub(crate) bind_address: SocketAddr,
-    /// The domain used for the callback.
-    pub(crate) domain: String,
-    /// The description returned in the metadata field of the response.
-    pub(crate) description: String,
-    /// Optional: the path of the image returned in the metadata field of the response.
-    pub(crate) image_path: Option<String>,
-}
-
-/// State used in for the Axum router.
-///
-/// Koerier parameters: `bind_address`, `domain`, `description`, `image_path`,
-/// LND parameters: `rest_host`, `invoice_macaroon_path`,
-/// `tls_cert_path`, `min_invoice_amount`, `max_invocie_amount`, `invoice_expiry_sec`.
-#[derive(Clone)]
-pub(crate) struct AxumState {
-    /// Koerier parameters.
-    koerier: Koerier,
-    /// LND parameters and methods.
-    lnd: Lnd,
-}
-
-/// URL parameters that need to be read from the callback request: `amount`.
-///
-/// `https://<domain>/<ENDPOINT_CALLBACK>?`amount`=<amount as milli-satoshis>`
 #[derive(Deserialize)]
-pub(crate) struct CallbackParams {
-    /// Amount, in milli satoshis.
-    pub(crate) amount: usize,
+#[serde(deny_unknown_fields)]
+struct Config {
+    koerier: Koerier,
+    nodes: BTreeMap<String, Lnd>,
 }
 
-/// The JSON response from the LNURLP request.
-#[derive(Debug, Serialize)]
-pub(crate) struct LnurlpResponse {
-    /// The metadata field, which must contain a description and can contain a base64-encoded PNG
-    /// or JPEG image.
-    pub(crate) metadata: String,
-    /// The mandatory "payRequest" tag.
-    pub(crate) tag: String,
-    /// The minimum invoice amount, in milli-satoshis.
-    #[serde(rename = "minSendable")]
-    pub(crate) min_sendable: u64,
-    /// The maximum invocie amount, in milli-satoshis.
-    #[serde(rename = "maxSendable")]
-    pub(crate) max_sendable: u64,
-    /// The URL the wallet must make a request with the `amount` parameter to for the invoice.
-    pub(crate) callback: String,
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Koerier {
+    bind_address: SocketAddr,
+    domain: String,
+    description: String,
+    image_path: Option<PathBuf>,
+    #[serde(default = "default_timeout")]
+    request_timeout_secs: u64,
+    #[serde(default = "default_concurrency")]
+    max_in_flight: usize,
+}
+fn default_timeout() -> u64 {
+    10
+}
+fn default_concurrency() -> usize {
+    16
 }
 
-/// The JSON response to the callback request.
-#[derive(Debug, Serialize)]
-pub(crate) struct PaymentRequestResponse {
-    /// bech32-encoded lightning invoice.
-    #[serde(rename = "pr")]
-    pub(crate) payment_request: String,
-    /// Empty array of route hints (legacy compatibility?)
-    pub(crate) routes: Vec<String>,
+struct AppState {
+    nodes: BTreeMap<String, Node>,
+    in_flight: Semaphore,
 }
 
-/// An error response, per LUD06.
-#[derive(Debug, Serialize)]
-pub(crate) struct KoerierErrorResponse {
-    /// The response status. Must be "ERROR".
-    pub(crate) status: String,
-    /// The reason for the error. Arbitrary.
-    pub(crate) reason: String,
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PayParams {
+    metadata: String,
+    tag: &'static str,
+    min_sendable: u64,
+    max_sendable: u64,
+    callback: String,
 }
 
-/// Response to the caller as per [LUD06-3](https://github.com/lnurl/luds/blob/luds/06.md#pay-to-static-qrnfclink):
-/// ```json
-/// {
-///    "callback": string, // The URL from LN SERVICE which will accept the pay request parameters
-///    "maxSendable": number, // Max millisatoshi amount LN SERVICE is willing to receive
-///    "minSendable": number, // Min millisatoshi amount LN SERVICE is willing to receive, can not be less than 1 or more than `maxSendable`
-///    "metadata": string, // Metadata json which must be presented as raw string here, this is required to pass signature verification at a later step
-///    "tag": "payRequest" // Type of LNURL
-/// }
-/// ```
-async fn return_params(State(state): State<Arc<AxumState>>, Path(user): Path<String>) -> Result<String, KoerierError> {
-    info!("Received GET /.well-known/lnurlp/{}", user);
+#[derive(Serialize)]
+struct PaymentRequest {
+    pr: String,
+    routes: Vec<String>,
+}
 
-    let mut metadata: Vec<[String; 2]> = vec![["text/plain".to_string(), state.koerier.description.clone()]];
+fn node<'a>(state: &'a AppState, name: &str) -> Result<&'a Node, LnurlError> {
+    state
+        .nodes
+        .get(name)
+        .ok_or_else(|| LnurlError::new("Unknown Lightning Address"))
+}
 
-    // Push a base64-encode image to the metadata, if the path is specified.
-    if let Some(image_path) = state.koerier.image_path.clone() {
-        let image_path: PathBuf = PathBuf::from(&image_path);
-        let base64_image: String = get_base64_image(&image_path)?;
+async fn return_params(
+    State(state): State<Arc<AppState>>,
+    user: Result<RoutePath<String>, PathRejection>,
+) -> Result<Json<PayParams>, LnurlError> {
+    let RoutePath(user) = user.map_err(|_| LnurlError::new("Invalid Lightning Address"))?;
+    let node = node(&state, &user)?;
+    Ok(Json(PayParams {
+        metadata: node.metadata.clone(),
+        tag: "payRequest",
+        min_sendable: node.min_msat,
+        max_sendable: node.max_msat,
+        callback: node.callback.clone(),
+    }))
+}
 
-        metadata.push(["image/png;base64".to_string(), base64_image]);
+fn parse_amount(query: Option<&str>) -> Result<u64, LnurlError> {
+    let mut amount = None;
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        if key != "amount" {
+            return Err(LnurlError::new("Only the amount parameter is supported"));
+        }
+        if amount.is_some() {
+            return Err(LnurlError::new("Duplicate amount parameter"));
+        }
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(LnurlError::new("Amount must be an integer in millisatoshis"));
+        }
+        amount = Some(value.parse::<u64>().map_err(|_| LnurlError::new("Invalid amount"))?);
     }
-
-    // LND returns the amount in sats, but we must return it milli-sats.
-    let min_sendable = state.lnd.min_invoice_amount * 1000;
-    let max_sendable = state.lnd.max_invoice_amount * 1000;
-
-    let response = LnurlpResponse {
-        metadata: serde_json::to_string(&metadata)?,
-        tag: "payRequest".to_string(),
-        min_sendable,
-        max_sendable,
-        callback: format!("{}{}", state.koerier.domain, ENDPOINT_CALLBACK),
-    };
-
-    info!("Responded to GET /.well-known/lnurlp/{}", user);
-    Ok(serde_json::to_string(&response)?)
+    amount.ok_or_else(|| LnurlError::new("Missing amount parameter"))
 }
 
-/// Response to the caller as per [LUD06-6](https://github.com/lnurl/luds/blob/luds/06.md#pay-to-static-qrnfclink):
-/// ```json
-/// {
-///     pr: string, // bech32-serialized lightning invoice
-///     routes: [] // an empty array
-/// }
-/// ```
 async fn fetch_invoice(
-    State(state): State<Arc<AxumState>>,
-    Query(params): Query<CallbackParams>,
-) -> Result<String, KoerierError> {
-    info!("Received GET {}?amount={}", ENDPOINT_CALLBACK, params.amount);
-
-    // Create a client to make REST requests to LND.
-    let client = match state.lnd.create_client() {
-        Ok(client) => client,
-        Err(e) => {
-            error!("Failed to create reqwest client with LND's certificate: {e}");
-            return Err(e);
-        }
-    };
-
-    // Check that the requested invoice amount respects the boundaries set by `minSendable` and
-    // `maxSendable`.
-    let amount = params.amount;
-    // Convert boundaries from milli-satoshi to satoshi.
-    let min_amount = state.lnd.min_invoice_amount * 1000;
-    let max_amount = state.lnd.max_invoice_amount * 1000;
-    if amount < min_amount as usize || amount > max_amount as usize {
-        error!("Caller requested an invoice amount that is out of bounds: {amount} ∌ [{min_amount}, {max_amount}]");
-        let error_response = KoerierErrorResponse {
-            status: "ERROR".to_string(),
-            reason: format!(
-                "The amount must be between {min_amount} and {max_amount} milli-satoshis, you requested {amount}"
-            ),
-        };
-
-        return Ok(serde_json::to_string(&error_response)?);
+    State(state): State<Arc<AppState>>,
+    user: Result<RoutePath<String>, PathRejection>,
+    RawQuery(query): RawQuery,
+) -> Result<Json<PaymentRequest>, LnurlError> {
+    let RoutePath(user) = user.map_err(|_| LnurlError::new("Invalid Lightning Address"))?;
+    let node = node(&state, &user)?;
+    let amount = parse_amount(query.as_deref())?;
+    if !(node.min_msat..=node.max_msat).contains(&amount) {
+        return Err(LnurlError::new("Amount is outside the advertised range"));
     }
-
-    // Compute the `description_hash` value, defined as the
-    // SHA256 digest of the UTF-8 serialization of the description JSON array.
-    let metadata = json!([["text/plain", state.koerier.description]]);
-    let mut hasher = Sha256::new();
-    hasher.update(metadata.to_string().as_bytes());
-    let description_hash = hasher.finalize().to_vec();
-
-    // Convert the amount from milli-satoshis to satoshis.
-    let invoice_amount = amount / 1000;
-
-    // Try fetching the invoice from LND and return it to the caller, or return an error.
-    let response_json = match state.lnd.fetch_invoice(client, invoice_amount, description_hash).await {
-        Ok(invoice) => {
-            info!("Responded to GET {}?amount={}", ENDPOINT_CALLBACK, params.amount);
-            info!("Invoice: {}", invoice);
-            let success_response = PaymentRequestResponse {
-                payment_request: invoice,
-                routes: vec![],
-            };
-
-            serde_json::to_string(&success_response)?
-        }
-        Err(_) => {
-            let error_response = KoerierErrorResponse {
-                status: "ERROR".to_string(),
-                reason: "Failed to fetch invoice from LND".to_string(),
-            };
-            error!("Failed to fetch invoice from LND");
-            error!(
-                "Responded to GET {}?amount={} with an error",
-                ENDPOINT_CALLBACK, params.amount
-            );
-            serde_json::to_string(&error_response)?
-        }
-    };
-
-    Ok(response_json)
+    // No wait queue: reject new work when all backend request permits are held.
+    let _permit = state
+        .in_flight
+        .try_acquire()
+        .map_err(|_| LnurlError::new("Service is busy; retry later"))?;
+    let invoice = node.invoice(amount).await.map_err(|_| {
+        // Backend errors can contain credentials and internal URLs; keep them private.
+        warn!(node = user, "LND invoice request failed");
+        LnurlError::new("Failed to fetch invoice from LND")
+    })?;
+    Ok(Json(PaymentRequest {
+        pr: invoice,
+        routes: vec![],
+    }))
 }
 
-/// Read configuration parameters from the TOML configuration file.
-fn parse_config(config_path: String) -> Result<(Koerier, Lnd), KoerierError> {
-    let config_str = match fs::read_to_string(&config_path) {
-        Ok(config_str) => config_str,
-        Err(_) => {
-            error!("Failed to open `{config_path}`. Does the file exist?");
-            process::exit(1);
-        }
-    };
-    let config: toml::Value = match toml::from_str(&config_str) {
-        Ok(config) => config,
-        Err(e) => {
-            error!("Failed to parse TOML from `{config_path}`: {e}");
-            process::exit(1);
-        }
-    };
-    let koerier: Koerier = match config["koerier"].clone().try_into() {
-        Ok(koerier) => koerier,
-        Err(e) => {
-            error!("Failed to parse `[koerier]` section from `{config_path}`: {e}");
-            process::exit(1);
-        }
-    };
-    let lnd: Lnd = match config["lnd"].clone().try_into() {
-        Ok(lnd) => lnd,
-        Err(e) => {
-            error!("Failed to parse `[lnd]` section from `{config_path}`: {e}");
-            process::exit(1);
-        }
-    };
-
-    // Try to parse the image to catch any errors on startup.
-    if let Some(image_path) = &koerier.image_path {
-        let image_path: PathBuf = PathBuf::from(&image_path);
-        match get_base64_image(&image_path) {
-            Ok(_) => (),
-            Err(_) => process::exit(1),
-        };
-    };
-
-    info!("Successfully parsed configuration from `{config_path}`");
-
-    debug!("");
-    debug!("[kourier]");
-    debug!("domain = {}", koerier.domain);
-    debug!("bind_address = {}", koerier.bind_address);
-    debug!("description = {}", koerier.description);
-    debug!("image_path = {:#?}", koerier.image_path);
-    debug!("[lnd]");
-    debug!("rest_host = {}", lnd.rest_host);
-    debug!("tls_cert_path = {}", lnd.tls_cert_path);
-    debug!("invoice_macaroon_path = {}", lnd.invoice_macaroon_path);
-    debug!("min_invoice_amount = {}", lnd.min_invoice_amount);
-    debug!("max_invoice_amount = {}", lnd.max_invoice_amount);
-    debug!("invoice_expiry_sec = {}", lnd.invoice_expiry_sec);
-    debug!("");
-
-    Ok((koerier, lnd))
+fn router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/.well-known/lnurlp/{user}", get(return_params))
+        .route(
+            "/lnurlp/{user}/callback",
+            get(fetch_invoice).head(|| async { LnurlError::new("Only GET is supported") }),
+        )
+        // Liveness only: no LND, chain, or channel readiness check.
+        .route("/healthz", get(|| async { Json(serde_json::json!({"status": "ok"})) }))
+        .fallback(|| async { LnurlError::new("Unknown endpoint") })
+        .method_not_allowed_fallback(|| async { LnurlError::new("Only GET is supported") })
+        .layer(middleware::map_response(
+            |mut response: axum::response::Response| async move {
+                response.headers_mut().insert(
+                    axum::http::header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("no-store"),
+                );
+                response
+            },
+        ))
+        .with_state(state)
 }
 
-/// Get a base64-encoded image [`String`] from a [`PathBuf`].
-fn get_base64_image(image_path: &PathBuf) -> Result<String, KoerierError> {
-    let image = match image::open(image_path) {
-        Ok(png) => png,
-        Err(e) => {
-            error!("Failed to open image with path path {}: {}", image_path.display(), e);
-            return Err(KoerierError::Image(e));
-        }
-    };
-
-    let mut png_buffer: Vec<u8> = Vec::new();
-    let mut cursor: Cursor<&mut Vec<u8>> = Cursor::new(&mut png_buffer);
-    match image.write_to(&mut cursor, ImageFormat::Png) {
-        Ok(_) => {}
-        Err(e) => {
-            error!("Error writing image to buffer: {}", e);
-            return Err(KoerierError::Image(e));
-        }
+fn public_origin(domain: &str) -> Result<Url> {
+    let url = Url::parse(domain).context("invalid koerier.domain URL")?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || domain.contains('@')
+        || url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        bail!("koerier.domain must be an HTTPS origin without credentials, path, query, or fragment");
     }
+    Ok(url)
+}
 
-    let base64_png: String = general_purpose::STANDARD.encode(&png_buffer);
+fn valid_alias(alias: &str) -> bool {
+    (1..=64).contains(&alias.len())
+        && alias
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_')
+}
 
-    Ok(base64_png)
+fn image_metadata(image_path: &Path) -> Result<String> {
+    let image = image::open(image_path).context("cannot read metadata image")?;
+    let mut bytes = Cursor::new(Vec::new());
+    image
+        .write_to(&mut bytes, ImageFormat::Png)
+        .context("cannot encode metadata image")?;
+    Ok(STANDARD.encode(bytes.into_inner()))
+}
+
+fn build_state(config: Config, config_dir: &Path, credentials_dir: &Path) -> Result<(SocketAddr, Arc<AppState>)> {
+    let settings = config.koerier;
+    let origin = public_origin(&settings.domain)?;
+    if config.nodes.is_empty() {
+        bail!("at least one named node is required");
+    }
+    if settings.request_timeout_secs == 0
+        || settings.max_in_flight == 0
+        || settings.max_in_flight > Semaphore::MAX_PERMITS
+    {
+        bail!("request_timeout_secs and max_in_flight must be positive and supported");
+    }
+    let image = settings
+        .image_path
+        .as_ref()
+        .map(|path| image_metadata(&config_dir.join(path)))
+        .transpose()?;
+    let mut nodes = BTreeMap::new();
+    for (name, lnd) in config.nodes {
+        if !valid_alias(&name) {
+            bail!("node aliases must contain 1-64 lowercase ASCII letters, digits, hyphens, or underscores");
+        }
+        let mut metadata = vec![
+            ["text/plain".to_owned(), settings.description.clone()],
+            [
+                "text/identifier".to_owned(),
+                format!("{}@{}", name, origin.host_str().expect("validated host")),
+            ],
+        ];
+        if let Some(image) = &image {
+            metadata.push(["image/png;base64".to_owned(), image.clone()]);
+        }
+        let metadata = serde_json::to_string(&metadata)?;
+        let callback = origin.join(&format!("/lnurlp/{name}/callback"))?.to_string();
+        let node = Node::new(
+            lnd,
+            credentials_dir,
+            metadata,
+            callback,
+            Duration::from_secs(settings.request_timeout_secs),
+        )
+        .with_context(|| format!("invalid configuration for node {name}"))?;
+        nodes.insert(name, node);
+    }
+    Ok((
+        settings.bind_address,
+        Arc::new(AppState {
+            nodes,
+            in_flight: Semaphore::new(settings.max_in_flight),
+        }),
+    ))
+}
+
+fn load_config(path: &Path) -> Result<(SocketAddr, Arc<AppState>)> {
+    let config = fs::read_to_string(path).context("cannot read configuration file")?;
+    let config: Config = toml::from_str(&config).context("invalid TOML configuration")?;
+    let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let credentials_dir = std::env::var_os("CREDENTIALS_DIRECTORY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_dir.to_path_buf());
+    build_state(config, config_dir, &credentials_dir)
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
-
     let args = Cli::parse();
+    let (address, state) = load_config(&args.config)?;
+    let listener = TcpListener::bind(address).await.context("cannot bind HTTP listener")?;
+    info!(address = %listener.local_addr()?, nodes = state.nodes.len(), "koerier is listening");
+    axum::serve(listener, router(state))
+        .with_graceful_shutdown(shutdown())
+        .await?;
+    Ok(())
+}
 
-    let (koerier, lnd) = parse_config(args.config).unwrap();
-
-    let state = Arc::new(AxumState {
-        koerier: koerier.clone(),
-        lnd,
-    });
-
-    let router: Router = Router::new()
-        .route(ENDPOINT_LNURLP, get(return_params))
-        .route(ENDPOINT_CALLBACK, get(fetch_invoice))
-        .with_state(state);
-
-    let listener = match TcpListener::bind(koerier.bind_address).await {
-        Ok(listener) => {
-            info!("koerier is bound and listening at {}", koerier.bind_address);
-            listener
+async fn shutdown() {
+    #[cfg(unix)]
+    {
+        if let Ok(mut terminate) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = terminate.recv() => {} }
+            return;
         }
-        Err(e) => {
-            error!("koerier failed to bind to {}: {}", koerier.bind_address, e);
-            process::exit(1);
-        }
-    };
-
-    match axum::serve(listener, router).await {
-        Ok(_) => {}
-        Err(e) => {
-            error!("axum failed to serve: {}", e);
-            process::exit(1);
-        }
-    };
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }

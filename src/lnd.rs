@@ -1,86 +1,140 @@
-use core::net::SocketAddr;
 use std::fs;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use anyhow::{Context, Result, bail};
 use base64::Engine;
-use base64::engine::general_purpose;
-use reqwest::Certificate;
-use reqwest::Client;
+use base64::engine::general_purpose::STANDARD;
+use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::{Certificate, Client};
 use serde::Deserialize;
-use serde::Serialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
-use crate::error::KoerierError;
+const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+const MAX_SAFE_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
-/// LND configuration parameters.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+/// Configuration for one named LND backend. Bounds are in satoshis.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Lnd {
-    /// The REST host where LND is listening. The default host is `127.0.0.1:8080`.
     pub(crate) rest_host: SocketAddr,
-    /// The full path to the `tls.cert` file. The default path is `~/.lnd/tls.cert`.
-    pub(crate) tls_cert_path: String,
-    /// The full path to the `invoice.macaroon` file. The default path is
-    /// `~/.lnd/data/chain/bitcoin/mainnet/invoice.macaroon`.
-    pub(crate) invoice_macaroon_path: String,
-    /// The minimum invoice amount, in satoshis.
+    pub(crate) tls_cert_path: PathBuf,
+    pub(crate) invoice_macaroon_path: PathBuf,
     pub(crate) min_invoice_amount: u64,
-    /// The maximum invoice amoun, in satoshis.
     pub(crate) max_invoice_amount: u64,
-    /// The invoice expiry time, in seconds.
     pub(crate) invoice_expiry_sec: u32,
 }
 
-/// LND related methods.
-impl Lnd {
-    /// Create an async client that makes requests to LND's REST interface.
-    pub(crate) fn create_client(&self) -> Result<Client, KoerierError> {
-        let cert: Vec<u8> = fs::read(&self.tls_cert_path)?;
-        let cert: Certificate = Certificate::from_pem(&cert)?;
+/// Immutable runtime state, with credentials and metadata read once at startup.
+pub(crate) struct Node {
+    client: Client,
+    invoice_url: String,
+    expiry: String,
+    description_hash: String,
+    pub(crate) metadata: String,
+    pub(crate) callback: String,
+    pub(crate) min_msat: u64,
+    pub(crate) max_msat: u64,
+}
 
-        let client: Client = Client::builder().add_root_certificate(cert).build()?;
-
-        Ok(client)
-    }
-
-    /// Encode the binary `invoice.macaroon` file into hexadecimal.
-    pub(crate) fn hex_encoded_macaroon(&self) -> Result<String, KoerierError> {
-        let invoice_macaroon = fs::read(&self.invoice_macaroon_path)?;
-        let invoice_macaroon = hex::encode(invoice_macaroon);
-
-        Ok(invoice_macaroon)
-    }
-
-    /// Make a POST request to the `/v1/invoices` endpoint and fetch an invoice with the defined
-    /// amount.
-    pub(crate) async fn fetch_invoice(
-        &self,
-        client: Client,
-        value: usize,
-        description_hash: Vec<u8>,
-    ) -> Result<String, KoerierError> {
-        // Request body for the `POST /v1/invoices` endpoint.
-        let request_body = json!({
-            "value": value,
-            "description_hash": general_purpose::STANDARD.encode(&description_hash),
-            "expiry": &self.invoice_expiry_sec,
-            "private": false,
-        });
-
-        // Full URL to the invoice endpoint.
-        let url_invoices = format!("https://{}/v1/invoices", self.rest_host);
-
-        // Make the request to LND with the `invoice.macaroon` as a header.
-        let response = client
-            .post(url_invoices)
-            .header("Grpc-Metadata-macaroon", self.hex_encoded_macaroon()?)
-            .json(&request_body)
-            .send()
-            .await?;
-        let body: serde_json::Value = response.json().await?;
-
-        if let Some(payment_request) = body.get("payment_request") {
-            Ok(payment_request.as_str().unwrap().to_string())
-        } else {
-            Err(KoerierError::Lnd("No `payment_request` in LND's response".to_string()))
+impl Node {
+    pub(crate) fn new(
+        config: Lnd,
+        credentials_dir: &Path,
+        metadata: String,
+        callback: String,
+        timeout: Duration,
+    ) -> Result<Self> {
+        let min_msat = config
+            .min_invoice_amount
+            .checked_mul(1000)
+            .context("minimum amount overflows msat")?;
+        let max_msat = config
+            .max_invoice_amount
+            .checked_mul(1000)
+            .context("maximum amount overflows msat")?;
+        if min_msat == 0 || min_msat > max_msat || max_msat > MAX_SAFE_JSON_INTEGER {
+            bail!("invoice bounds must be positive, ordered, and fit an exact JSON integer");
         }
+        if config.invoice_expiry_sec == 0 {
+            bail!("invoice_expiry_sec must be positive");
+        }
+        let certificate =
+            fs::read(credentials_dir.join(config.tls_cert_path)).context("cannot read LND TLS certificate")?;
+        let certificate = Certificate::from_pem(&certificate).context("invalid LND TLS certificate")?;
+        let macaroon =
+            fs::read(credentials_dir.join(config.invoice_macaroon_path)).context("cannot read LND invoice macaroon")?;
+        if macaroon.is_empty() {
+            bail!("LND invoice macaroon must not be empty");
+        }
+        let mut header = HeaderValue::from_str(&hex::encode(macaroon))?;
+        header.set_sensitive(true);
+        let mut headers = HeaderMap::new();
+        headers.insert("Grpc-Metadata-macaroon", header);
+        // reqwest's rustls-no-provider feature needs an explicitly installed provider.
+        // A previous node (or embedding application) may already have installed one.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let client = Client::builder()
+            .add_root_certificate(certificate)
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .timeout(timeout)
+            .connect_timeout(timeout)
+            .build()
+            .context("cannot build LND HTTPS client")?;
+        Ok(Self {
+            client,
+            invoice_url: format!("https://{}/v1/invoices", config.rest_host),
+            expiry: config.invoice_expiry_sec.to_string(),
+            description_hash: STANDARD.encode(Sha256::digest(metadata.as_bytes())),
+            metadata,
+            callback,
+            min_msat,
+            max_msat,
+        })
+    }
+
+    /// Request an ordinary invoice without rounding millisatoshis to satoshis.
+    pub(crate) async fn invoice(&self, amount_msat: u64) -> Result<String> {
+        let mut response = self
+            .client
+            .post(&self.invoice_url)
+            .json(&json!({
+                "value_msat": amount_msat.to_string(),
+                "description_hash": self.description_hash,
+                "expiry": self.expiry,
+                "private": true,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        if !response.status().is_success() {
+            bail!("unexpected LND response status");
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+        {
+            bail!("LND response exceeds limit");
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+                bail!("LND response exceeds limit");
+            }
+            body.extend_from_slice(&chunk);
+        }
+        #[derive(Deserialize)]
+        struct InvoiceResponse {
+            payment_request: String,
+        }
+        let invoice: InvoiceResponse = serde_json::from_slice(&body)?;
+        if invoice.payment_request.trim().is_empty() {
+            bail!("LND returned an empty payment request");
+        }
+        Ok(invoice.payment_request)
     }
 }
