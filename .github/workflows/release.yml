@@ -1,0 +1,148 @@
+name: Release
+
+# Releases are explicitly dispatched; pushes and pull requests do not build.
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the release (requires the matching version tag)
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: koerier-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Validate release source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      revision: ${{ steps.metadata.outputs.revision }}
+      toolchain: ${{ steps.metadata.outputs.toolchain }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Validate version, tag, and TLS dependency source
+        id: metadata
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+          import tomllib
+
+          def main():
+              manifest = tomllib.loads(Path("Cargo.toml").read_text())
+              lock = tomllib.loads(Path("Cargo.lock").read_text())
+              version = manifest["package"]["version"]
+              toolchain = manifest["package"]["metadata"]["rbmt"]["toolchains"]["stable"]
+              for value in (version, toolchain):
+                  if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value):
+                      raise SystemExit("Release version and compiler must be stable versions")
+              if any(package["name"] == "openssl-src" for package in lock["package"]):
+                  raise SystemExit("Release must use the separately verified OpenSSL source")
+              if os.environ["PUBLISH"] == "true":
+                  if os.environ["GITHUB_REF_TYPE"] != "tag" or os.environ["GITHUB_REF_NAME"] != f"v{version}":
+                      raise SystemExit("Publish from the tag matching Cargo.toml")
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  output.write(f"version={version}\nrevision={os.environ['GITHUB_SHA']}\ntoolchain={toolchain}\n")
+
+          main()
+          PY
+
+  build:
+    name: Build release (${{ matrix.system }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - system: aarch64-linux
+            target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.prepare.outputs.revision }}
+          persist-credentials: false
+      - name: Install the pinned Rust compiler
+        env:
+          TOOLCHAIN: ${{ needs.prepare.outputs.toolchain }}
+          TARGET: ${{ matrix.target }}
+        run: rustup toolchain install "$TOOLCHAIN" --profile minimal --no-self-update --target "$TARGET"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          shared-key: release-${{ matrix.target }}-openssl-${{ hashFiles('scripts/build-release-openssl.sh') }}
+      - name: Build verified static OpenSSL
+        run: bash scripts/build-release-openssl.sh "$RUNNER_TEMP/release-openssl"
+      - name: Build the locked application binary
+        env:
+          TOOLCHAIN: ${{ needs.prepare.outputs.toolchain }}
+          TARGET: ${{ matrix.target }}
+          OPENSSL_NO_VENDOR: "1"
+          OPENSSL_STATIC: "1"
+          OPENSSL_DIR: ${{ runner.temp }}/release-openssl
+        run: cargo +"$TOOLCHAIN" build --release --locked --target "$TARGET" --bin koerier
+      - name: Verify and package the release binary
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REVISION: ${{ needs.prepare.outputs.revision }}
+          SYSTEM: ${{ matrix.system }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          bash scripts/package-release.sh "$VERSION" "$SYSTEM" "$REVISION" \
+            "target/$TARGET/release/koerier" "$RUNNER_TEMP/release-openssl" release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: koerier-${{ matrix.system }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish verified archives
+    needs: [prepare, build]
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: koerier-*-linux
+          path: release
+          merge-multiple: true
+      - name: Verify checksums and publish the existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          REVISION: ${{ needs.prepare.outputs.revision }}
+        run: |
+          cd release
+          sha256sum --check ./*.sha256
+          tag_revision=$(gh api "repos/$GITHUB_REPOSITORY/commits/v$VERSION" --jq .sha)
+          if [ "$tag_revision" != "$REVISION" ]; then
+            echo "Release tag changed after source validation" >&2
+            exit 1
+          fi
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "v$VERSION" --generate-notes ./*.tar.gz ./*.sha256

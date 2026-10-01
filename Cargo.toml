@@ -1,5 +1,5 @@
 [package]
-version = "1.2.1"
+version = "1.2.2"
 name = "koerier"
 description = "A self-hosted lightning address server for LND"
 authors = ["Luis Schwab <dev@luisschwab.net"]

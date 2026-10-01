@@ -30,6 +30,16 @@ sequenceDiagram
 
 ## Run
 
+Linux release archives are published for `x86_64-linux` and `aarch64-linux`.
+Each archive contains `bin/koerier`, its source revision in `share/koerier/REVISION`, and licenses in `share/koerier/licenses`.
+A matching `.tar.gz.sha256` file verifies each archive.
+Release binaries statically link SHA256-verified OpenSSL 3.5.9; the host supplies the Linux C runtime.
+
+The [release workflow](.github/workflows/release.yml) runs only through `workflow_dispatch` and does not run test suites.
+By default, it builds downloadable workflow artifacts without publishing.
+To publish, dispatch the workflow on the existing version tag, such as `v1.2.2`, with `publish` enabled.
+The tag must match the package version in `Cargo.toml`.
+
 Install Rust 1.95 or later, `pkg-config`, and the OpenSSL development headers and libraries.
 For Nix users, `nix develop` provides these build dependencies.
 
