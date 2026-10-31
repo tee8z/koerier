@@ -198,8 +198,8 @@ zero_sized_map_values = "warn"
 [dev-dependencies]
 rcgen = "0.14.10"
 ring = { version = "=0.17.14", default-features = false }
-rustls = { version = "=0.23.45", default-features = false, features = ["ring"] }
-rustls-webpki = { version = "=0.103.15", default-features = false }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring"] }
+rustls-webpki = { version = "=0.103.16", default-features = false }
 tempfile = "3"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tower = { version = "0.5", features = ["util"] }
